@@ -371,32 +371,35 @@ void RobotLink::setOnlyRenderDepth(bool onlyRenderDepth)
 void RobotLink::updateAlpha()
 {
   float link_alpha = alpha_property_->getFloat();
-  M_SubEntityToMaterial::iterator it = materials_.begin();
-  M_SubEntityToMaterial::iterator end = materials_.end();
-  for (; it != end; ++it)
+  for (auto& item : materials_)
   {
-    const Ogre::MaterialPtr& material = it->second;
+    Ogre::MaterialPtr& active = item.second.first;
+    const Ogre::MaterialPtr& original = item.second.second;
 
     if ( only_render_depth_ )
     {
-      material->setColourWriteEnabled( false );
-      material->setDepthWriteEnabled( true );
+      active->setColourWriteEnabled(false);
+      active->setDepthWriteEnabled(true);
     }
     else
     {
-      Ogre::ColourValue color = material->getTechnique(0)->getPass(0)->getDiffuse();
+      Ogre::ColourValue color = active->getTechnique(0)->getPass(0)->getDiffuse();
       color.a = robot_alpha_ * material_alpha_ * link_alpha;
-      material->setDiffuse( color );
+      active->setDiffuse(color);
 
-      if ( color.a < 0.9998 )
+      if (color.a < 0.9998) // transparent
       {
-        material->setSceneBlending( Ogre::SBT_TRANSPARENT_ALPHA );
-        material->setDepthWriteEnabled( false );
+        active->setSceneBlending(Ogre::SBT_TRANSPARENT_ALPHA);
+        active->setDepthWriteEnabled(false);
       }
-      else
+      else if (active == original)
       {
-        material->setSceneBlending( Ogre::SBT_REPLACE );
-        material->setDepthWriteEnabled( true );
+        active->setSceneBlending(Ogre::SBT_REPLACE);
+        active->setDepthWriteEnabled(true);
+      }
+      else // restore original material
+      {
+        original->copyDetailsTo(active);
       }
     }
   }
@@ -648,22 +651,23 @@ void RobotLink::createEntityForGeometryElement(const urdf::LinkConstSharedPtr& l
       Ogre::SubEntity* sub = entity->getSubEntity(i);
       const std::string& material_name = sub->getMaterialName();
 
+      Ogre::MaterialPtr active, original;
       if (material_name == "BaseWhite" || material_name == "BaseWhiteNoLighting")
       {
-        sub->setMaterialName(default_material_name_);
+        sub->setMaterial(active = default_material_);
+        original = active; // we don't need a backup copy of the default material
       }
       else
       {
-        // Need to clone here due to how selection works.  Once selection id is done per object and not per material,
-        // this can go away
-        std::stringstream ss;
-        ss << material_name << count++ << "Robot";
-        std::string cloned_name = ss.str();
-        sub->getMaterial()->clone(cloned_name);
-        sub->setMaterialName(cloned_name);
+        // create a new material copy for each instance of a RobotLink to allow modification per link
+        active = Ogre::MaterialPtr(new Ogre::Material(
+            nullptr, material_name, 0, Ogre::ResourceGroupManager::DEFAULT_RESOURCE_GROUP_NAME));
+        *active = *sub->getMaterial();
+        sub->setMaterial(active);
+        // create a backup of the material as we will modify the active one e.g. in updateAlpha()
+        original = active->clone(sub->getMaterial()->getName() + "_original");
       }
-
-      materials_[sub] = sub->getMaterial();
+      materials_[sub] = std::make_pair(active, original);
     }
   }
 }
@@ -909,11 +913,9 @@ void RobotLink::setToNormalMaterial()
   }
   else
   {
-    M_SubEntityToMaterial::iterator it = materials_.begin();
-    M_SubEntityToMaterial::iterator end = materials_.end();
-    for (; it != end; ++it)
+    for (const auto& item : materials_)
     {
-      it->first->setMaterial(it->second);
+      item.first->setMaterial(item.second.first);
     }
   }
 }
